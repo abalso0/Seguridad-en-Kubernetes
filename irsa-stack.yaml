@@ -1,0 +1,77 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: "Demo 2: IRSA - Rol IAM + Bucket S3"
+
+Parameters:
+  ClusterName:
+    Type: String
+    Default: eks-seguro
+  ClusterOIDCIssuer:
+    Type: String
+    Description: "Sin https:// - Obtener con: aws eks describe-cluster --name eks-seguro --query cluster.identity.oidc.issuer --output text | sed 's|https://||'"
+  Namespace:
+    Type: String
+    Default: irsa-demo
+  ServiceAccountName:
+    Type: String
+    Default: s3-reader-sa
+
+Resources:
+  DemoBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub eks-irsa-demo-${AWS::AccountId}
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  S3ReaderRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: eks-s3-reader-role
+      AssumeRolePolicyDocument:
+        Fn::Sub:
+          - |
+            {
+              "Version": "2012-10-17",
+              "Statement": [{
+                "Effect": "Allow",
+                "Principal": {
+                  "Federated": "arn:aws:iam::${AWS::AccountId}:oidc-provider/${OIDCIssuer}"
+                },
+                "Action": "sts:AssumeRoleWithWebIdentity",
+                "Condition": {
+                  "StringEquals": {
+                    "${OIDCIssuer}:sub": "system:serviceaccount:${NS}:${SA}",
+                    "${OIDCIssuer}:aud": "sts.amazonaws.com"
+                  }
+                }
+              }]
+            }
+          - OIDCIssuer: !Ref ClusterOIDCIssuer
+            NS: !Ref Namespace
+            SA: !Ref ServiceAccountName
+      Policies:
+        - PolicyName: s3-read-only
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:ListBucket
+                Resource:
+                  - !GetAtt DemoBucket.Arn
+                  - !Sub ${DemoBucket.Arn}/*
+
+Outputs:
+  RoleArn:
+    Value: !GetAtt S3ReaderRole.Arn
+  BucketName:
+    Value: !Ref DemoBucket
+  NextSteps:
+    Value: !Sub |
+      kubectl create namespace ${Namespace}
+      kubectl create serviceaccount ${ServiceAccountName} -n ${Namespace}
+      kubectl annotate sa ${ServiceAccountName} -n ${Namespace} eks.amazonaws.com/role-arn=${S3ReaderRole.Arn}
